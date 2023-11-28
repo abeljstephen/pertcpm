@@ -1,5 +1,5 @@
 #' @import readxl
-#' @import dplyr,
+#' @import dplyr
 #' @import tidyr
 
 # Load required libraries
@@ -291,7 +291,7 @@ clean_up_and_merge <- function(min_late_finish_rows, pert_data, round_digits = 4
 
 
 # Parent function to execute PERT, CPM, and Forward Pass
-pert_cpm <- function(user_data) {
+pertcpm <- function(user_data) {
   # Step 1: PERT Calculation
   pert_data <- calculate_pert_metrics(user_data)
 
@@ -319,7 +319,10 @@ pert_cpm <- function(user_data) {
 }
 
 
-
+#libraries needed
+#library(readxl)
+#library(tidyr)
+#library(dplyr)
 # # Specify the data path, filename, and sheetname
 # #datapath <- "C:/Users/abstephe/OneDrive - Microsoft/Documents/R Code/CriticalPath/Data/"
 # datapath <- "/Users/abeljstephen/Documents/R Code/R/CriticalPath/Data"
@@ -332,6 +335,6 @@ pert_cpm <- function(user_data) {
 #
 # # Example usage:
 # user_data <- original_data
-# result <- pert_cpm(user_data)
+# result <- pertcpm(user_data)
 # print(result)
 

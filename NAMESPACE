@@ -1,1 +1,8 @@
 exportPattern("^[[:alpha:]]+")
+
+ #importFrom("stats", "filter")
+ importFrom("utils", "tail")
+
+ import("readxl")
+ import("dplyr")
+ import("tidyr")
