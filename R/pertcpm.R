@@ -193,10 +193,10 @@ run_backward_pass <- function(forward_pass_result, relationships_data) {
   # }
 
   # Loop through backward_pass
+  # Loop through backward_pass
   for (i in seq_along(backward_pass$Activity)) {
-  for (i in 1:nrow(backward_pass_data)) {
     # Match backward_pass$Activity with forward_pass_result$Activity
-    match_index <- match(backward_pass_data$Activity[i], forward_pass_result$Activity)
+    match_index <- match(backward_pass$Activity[i], forward_pass_result$Activity)
 
     # Check if there's a match and the match_index is not NA
     if (!is.na(match_index)) {
@@ -205,6 +205,7 @@ run_backward_pass <- function(forward_pass_result, relationships_data) {
       updated_backward_pass$EarlyFinish[i] <- forward_pass_result$EarlyFinish[match_index]
     }
   }
+
 
 
   # Add columns LateStart and LateFinish with initial values of 0
