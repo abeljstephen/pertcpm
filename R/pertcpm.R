@@ -340,6 +340,10 @@ pertcpm <- function(user_data) {
   final_result_table <- result_table %>%
     left_join(subset_slack_result, by = "Activity")
 
+  # Replace scientific notation to 4 decimal places
+  final_result_table <- final_result_table %>%
+    mutate_all(function(x) if(is.numeric(x)) format(round(x, 4), nsmall = 4) else x)
+
   return(final_result_table)
 }
 
