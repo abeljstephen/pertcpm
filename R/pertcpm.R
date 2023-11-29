@@ -7,8 +7,6 @@ library(readxl)
 library(dplyr)
 library(tidyr)
 
-
-
 # Function to calculate Pert_Duration, Standard_Deviation, and Probability
 calculate_metrics <- function(optimistic, expected, pessimistic) {
   pert_duration <- (4 * expected + pessimistic + optimistic) / 6
@@ -40,6 +38,7 @@ calculate_metrics <- function(optimistic, expected, pessimistic) {
            cumulative_probability_90))
 }
 
+
 # Function to calculate PERT metrics for the entire project
 calculate_pert_metrics <- function(project_data) {
   # Apply the function to each row of the data frame
@@ -59,6 +58,9 @@ calculate_pert_metrics <- function(project_data) {
 
 create_cpm_data <- function(pert_data) {
   # Subset the table to create cpm_data
+  # the end result will be Activity, Predecessor, Duration, Successor EarlyStart, EarlyFinish which will be accessible in [[3]]
+  # EarlyStart and EarlyFinish will be all 0's and will be calculated with values by next function i.e., run_forward_pass
+
   cpm_data <- pert_data[, c("Activity", "Predecessor", "90%_Cumulative_Probability")]
   colnames(cpm_data) <- c("Activity", "Predecessor", "Duration")
 
@@ -108,6 +110,9 @@ create_cpm_data <- function(pert_data) {
 # Function for forward pass
 run_forward_pass <- function(predecessors_data) {
   # Assuming 'predecessors_data' is the data frame with columns Activity, Predecessor, and Duration
+  # This predecessors_data, coming from above function "create_cpm_data" and run as run_forward_pass(cpm_data[[1]]) will
+  # have repeated Activity rows indicating one or more Predecessors for each Activity
+  # The final output will simply retain only the row (for instances of repeated Activity) where it's EarlyFinish is maximum
   data_forward <- predecessors_data %>%
     mutate(
       EarlyStart = ifelse(is.na(Predecessor), 0, NA),  # Initialize EarlyStart to 0 for the first activity
@@ -156,10 +161,10 @@ run_forward_pass <- function(predecessors_data) {
 
 run_backward_pass <- function(forward_pass_result, relationships_data) {
   # Subset relationships_data where Successor exists
-  backward_pass <- relationships_data[!is.na(relationships_data$Successor), ]
+  backward_pass_data <- relationships_data[!is.na(relationships_data$Successor), ]
 
   # Drop the Predecessor column
-  backward_pass <- backward_pass[, !(names(backward_pass) %in% "Predecessor")]
+  backward_pass_data <- backward_pass_data[, !(names(backward_pass_data) %in% "Predecessor")]
 
   # Find the last row of forward_pass_result
   last_row <- tail(forward_pass_result, 1)
@@ -171,21 +176,35 @@ run_backward_pass <- function(forward_pass_result, relationships_data) {
   last_row <- cbind(last_row[, "Activity", drop = FALSE], Successor = NA, last_row[, -1])
 
   # Add the last row to backward_pass
-  updated_backward_pass <- rbind(backward_pass, last_row)
+  updated_backward_pass <- rbind(backward_pass_data, last_row)
 
   # Copy over the EarlyStart and EarlyFinish values to updated_backward_pass
   # Loop through backward_pass
-  for (i in 1:nrow(backward_pass)) {
+  # for (i in 1:nrow(backward_pass_data)) {
+  #   # Match backward_pass$Activity with forward_pass_result$Activity
+  #   match_index <- match(backward_pass_data$Activity[i], forward_pass_result$Activity)
+  #
+  #   # Check if there's a match
+  #   if (!is.na(match_index)) {
+  #     # Copy forward_pass_result$EarlyStart and forward_pass_result$EarlyFinish to backward_pass
+  #     updated_backward_pass$EarlyStart[i] <- forward_pass_result$EarlyStart[match_index]
+  #     updated_backward_pass$EarlyFinish[i] <- forward_pass_result$EarlyFinish[match_index]
+  #   }
+  # }
+
+  # Loop through backward_pass
+  for (i in seq_along(backward_pass$Activity)) {
     # Match backward_pass$Activity with forward_pass_result$Activity
     match_index <- match(backward_pass$Activity[i], forward_pass_result$Activity)
 
-    # Check if there's a match
+    # Check if there's a match and the match_index is not NA
     if (!is.na(match_index)) {
       # Copy forward_pass_result$EarlyStart and forward_pass_result$EarlyFinish to backward_pass
       updated_backward_pass$EarlyStart[i] <- forward_pass_result$EarlyStart[match_index]
       updated_backward_pass$EarlyFinish[i] <- forward_pass_result$EarlyFinish[match_index]
     }
   }
+
 
   # Add columns LateStart and LateFinish with initial values of 0
   updated_backward_pass$LateStart <- 0
@@ -232,7 +251,7 @@ run_backward_pass <- function(forward_pass_result, relationships_data) {
 }
 
 
-calculate_slack <- function(backward_pass_result) {
+calculate_slack_and_cpm <- function(backward_pass_result) {
   # Calculate Total Slack
   backward_pass_result$TotalSlack <- backward_pass_result$LateFinish - backward_pass_result$EarlyFinish
 
@@ -249,12 +268,12 @@ calculate_slack <- function(backward_pass_result) {
 
 
 
-clean_up_and_merge <- function(min_late_finish_rows, pert_data, round_digits = 4) {
+clean_up_and_merge <- function(backward_pass_result, pert_data, round_digits = 4) {
   # Convert min_late_finish_rows to a data frame
-  min_late_finish_table <- as.data.frame(min_late_finish_rows)
+  backward_pass_table <- as.data.frame(backward_pass_result)
 
   # Print the resulting table
-  print(min_late_finish_table)
+  #print(backward_pass_table)
 
   # Round numeric values in the data frame
   round_numeric <- function(x, digits = round_digits) {
@@ -264,13 +283,13 @@ clean_up_and_merge <- function(min_late_finish_rows, pert_data, round_digits = 4
   }
 
   # Apply the rounding function
-  min_late_finish_table <- round_numeric(min_late_finish_table)
+  backward_pass_table <- round_numeric(backward_pass_table)
 
   # Assign min_late_finish_table to cpm_table
-  cpm_table <- min_late_finish_table
+  cpm_table <- backward_pass_table
 
   # Print the resulting table
-  print(cpm_table)
+  #print(cpm_table)
 
   # Convert pert_data to a data frame
   pert_table <- as.data.frame(pert_data)
@@ -279,13 +298,11 @@ clean_up_and_merge <- function(min_late_finish_rows, pert_data, round_digits = 4
   pert_cpm_table <- merge(pert_table, cpm_table, by = "Activity", all = TRUE)
 
   # Print the resulting merged table
-  print(pert_cpm_table)
+  #print(pert_cpm_table)
 
   # Return the merged table
   return(pert_cpm_table)
 }
-
-
 
 
 
@@ -295,27 +312,33 @@ pertcpm <- function(user_data) {
   # Step 1: PERT Calculation
   pert_data <- calculate_pert_metrics(user_data)
 
-  # Step 2: CPM Calculation
-  cpm_results <- create_cpm_data(pert_data)
+  # Step 2: CPM Data Preparation
+  cpm_data <- create_cpm_data(pert_data)
 
   # Step 3: Forward Pass
-  forward_pass_result <- run_forward_pass(cpm_results[[1]])
+  forward_pass_result <- run_forward_pass(cpm_data[[1]])
 
   # Step 4: Backward Pass
-  relationships_data <- cpm_results[[3]]
+  relationships_data <- cpm_data[[3]]
   backward_pass_result <- run_backward_pass(forward_pass_result, relationships_data)
 
 
   # Step 5: Slack Calculation
-  slack_result <- calculate_slack(backward_pass_result)
+  slack_and_cpm_result <- calculate_slack_and_cpm(backward_pass_result)
 
-  # Step 6: Final Table
-  # Assuming min_late_finish_rows and pert_data are available in your environment
+  # Step 6: Merge Final Backward Pass With PERT
   result_table <- clean_up_and_merge(backward_pass_result, pert_data)
 
-  # Return the results
-  # return(list(pert_data, cpm_results, forward_pass_result))
-    return(result_table)
+  #Step 7: Merge With Slack
+  # Subset slack_and_cpm_result to include only specific columns
+  subset_slack_result <- slack_and_cpm_result %>%
+    select(Activity, TotalSlack, FreeSlack, Critical)
+
+  # Merge result_table with subset_slack_result based on the "Activity" column
+  final_result_table <- result_table %>%
+    left_join(subset_slack_result, by = "Activity")
+
+  return(final_result_table)
 }
 
 
@@ -334,7 +357,8 @@ pertcpm <- function(user_data) {
 # original_data <- readxl::read_excel(file_path, sheet = sheetname)
 #
 # # Example usage:
-# user_data <- original_data
+# user_data<- original_data
 # result <- pertcpm(user_data)
 # print(result)
+
 
