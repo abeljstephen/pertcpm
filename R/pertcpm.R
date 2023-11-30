@@ -178,21 +178,6 @@ run_backward_pass <- function(forward_pass_result, relationships_data) {
   # Add the last row to backward_pass
   updated_backward_pass <- rbind(backward_pass_data, last_row)
 
-  # Copy over the EarlyStart and EarlyFinish values to updated_backward_pass
-  # Loop through backward_pass
-  # for (i in 1:nrow(backward_pass_data)) {
-  #   # Match backward_pass$Activity with forward_pass_result$Activity
-  #   match_index <- match(backward_pass_data$Activity[i], forward_pass_result$Activity)
-  #
-  #   # Check if there's a match
-  #   if (!is.na(match_index)) {
-  #     # Copy forward_pass_result$EarlyStart and forward_pass_result$EarlyFinish to backward_pass
-  #     updated_backward_pass$EarlyStart[i] <- forward_pass_result$EarlyStart[match_index]
-  #     updated_backward_pass$EarlyFinish[i] <- forward_pass_result$EarlyFinish[match_index]
-  #   }
-  # }
-
-  # Loop through backward_pass
   # Loop through backward_pass
   for (i in seq_along(backward_pass_data$Activity)) {
     # Match backward_pass$Activity with forward_pass_result$Activity
@@ -253,58 +238,88 @@ run_backward_pass <- function(forward_pass_result, relationships_data) {
 }
 
 
-calculate_slack_and_cpm <- function(backward_pass_result) {
+
+evaluate_slack_and_path <- function(data) {
   # Calculate Total Slack
-  backward_pass_result$TotalSlack <- backward_pass_result$LateFinish - backward_pass_result$EarlyFinish
+  data$TotalSlack <- round(data$LateFinish - data$EarlyFinish, 4)
 
-  # Calculate Free Slack
-  backward_pass_result$FreeSlack <- ifelse(is.na(backward_pass_result$Successor),
-                                           backward_pass_result$TotalSlack,
-                                           lead(backward_pass_result$EarlyStart, default = max(backward_pass_result$LateFinish)) - backward_pass_result$LateFinish)
+  # Create a data frame to store the EarlyStart values of Successors
+  successor_earlystart <- data.frame(Activity = data$Activity, EarlyStart_Successor = NA)
 
-  # Identify Critical activities
-  backward_pass_result$Critical <- ifelse(backward_pass_result$TotalSlack == 0, "Yes", "No")
+  # Loop through rows in data
+  for (i in seq_len(nrow(data))) {
+    # Check if the Successor column is not NA
+    if (!is.na(data$Successor[i])) {
+      # Find the matching row in successor_earlystart
+      matching_row <- which(successor_earlystart$Activity == data$Successor[i])
 
-  return(backward_pass_result)
-}
-
-
-
-clean_up_and_merge <- function(backward_pass_result, pert_data, round_digits = 4) {
-  # Convert min_late_finish_rows to a data frame
-  backward_pass_table <- as.data.frame(backward_pass_result)
-
-  # Print the resulting table
-  #print(backward_pass_table)
-
-  # Round numeric values in the data frame
-  round_numeric <- function(x, digits = round_digits) {
-    is_numeric <- sapply(x, is.numeric)
-    x[, is_numeric] <- round(x[, is_numeric], digits)
-    return(x)
+      # Update the EarlyStart_Successor value in the matching row
+      successor_earlystart$EarlyStart_Successor[matching_row] <- round(data$EarlyStart[i], 4)
+    }
   }
 
-  # Apply the rounding function
-  backward_pass_table <- round_numeric(backward_pass_table)
+  # Calculate Free Slack considering negative values
+  data$FreeSlack <- ifelse(is.na(data$Successor),
+                           round(data$TotalSlack, 4),
+                           round(lead(successor_earlystart$EarlyStart_Successor, default = max(data$LateFinish)) - data$LateFinish, 4))
 
-  # Assign min_late_finish_table to cpm_table
-  cpm_table <- backward_pass_table
+  # Identify OnCriticalPath and AlreadyDelayed
+  data$OnCriticalPath <- ifelse(data$TotalSlack == 0, "Yes", "No")
+  data$AlreadyDelayed <- ifelse(data$FreeSlack < 0, "Yes", "No")
 
-  # Print the resulting table
-  #print(cpm_table)
+  # Round numeric columns to 4 decimal places
+  numeric_columns <- sapply(data, is.numeric)
+  data[numeric_columns] <- round(data[numeric_columns], 4)
 
-  # Convert pert_data to a data frame
-  pert_table <- as.data.frame(pert_data)
-
-  # Merge data frames based on the "Activity" column
-  pert_cpm_table <- merge(pert_table, cpm_table, by = "Activity", all = TRUE)
-
-  # Print the resulting merged table
-  #print(pert_cpm_table)
-
-  # Return the merged table
-  return(pert_cpm_table)
+  return(data)
 }
+
+
+
+
+
+determine_critical_path <- function(data) {
+  # Calculate Total Slack
+  data$TotalSlack <- round(data$LateFinish - data$EarlyFinish, 4)
+
+  # Create a data frame to store the EarlyStart values of Successors
+  successor_earlystart <- data.frame(Activity = data$Activity, EarlyStart_Successor = NA)
+
+  # Loop through rows in data
+  for (i in seq_len(nrow(data))) {
+    # Check if the Successor column is not NA
+    if (!is.na(data$Successor[i])) {
+      # Find the matching row in successor_earlystart
+      matching_row <- which(successor_earlystart$Activity == data$Successor[i])
+
+      # Update the EarlyStart_Successor value in the matching row
+      successor_earlystart$EarlyStart_Successor[matching_row] <- round(data$EarlyStart[i], 4)
+    }
+  }
+
+  # Calculate Free Slack considering negative values
+  data$FreeSlack <- ifelse(is.na(data$Successor),
+                           round(data$TotalSlack, 4),
+                           ifelse(is.na(lead(successor_earlystart$EarlyStart_Successor)),
+                                  max(data$LateFinish) - data$LateFinish,
+                                  round(lead(successor_earlystart$EarlyStart_Successor) - data$LateFinish, 4)))
+
+  # Identify OnCriticalPath and AlreadyDelayed
+  data$OnCriticalPath <- ifelse(data$TotalSlack == 0, "Yes", "No")
+  data$AlreadyDelayed <- ifelse(data$FreeSlack < 0, "Yes", "No")
+
+  # Round numeric columns to 4 decimal places
+  numeric_columns <- sapply(data, is.numeric)
+  data[numeric_columns] <- round(data[numeric_columns], 4)
+
+  return(data)
+}
+
+
+
+
+
+
 
 
 
@@ -325,26 +340,29 @@ pertcpm <- function(user_data) {
   backward_pass_result <- pertcpm::run_backward_pass(forward_pass_result, relationships_data)
 
 
-  # Step 5: Slack Calculation
-  slack_and_cpm_result <- pertcpm::calculate_slack_and_cpm(backward_pass_result)
+  #Step 5: Calculate Free Slack and Total Slack
+  slack_data <- evaluate_slack_and_path(backward_pass_result)
 
-  # Step 6: Merge Final Backward Pass With PERT
-  result_table <- pertcpm::clean_up_and_merge(backward_pass_result, pert_data)
 
-  #Step 7: Merge With Slack
-  # Subset slack_and_cpm_result to include only specific columns
-  subset_slack_result <- slack_and_cpm_result %>%
-    dplyr::select(Activity, TotalSlack, FreeSlack, Critical)
+  # Step 6: Determine Critical Path
+  critical_path_data <- determine_critical_path(slack_data)
+  #print(result)
 
-  # Merge result_table with subset_slack_result based on the "Activity" column
-  final_result_table <- result_table %>%
-    dplyr::left_join(subset_slack_result, by = "Activity")
+  # Step 7: Final CPM Table
 
-  # Replace scientific notation to 4 decimal places
-  final_result_table <- final_result_table %>%
-    dplyr::mutate_all(function(x) if(is.numeric(x)) format(round(x, 4), nsmall = 4) else x)
+  # Assuming your tables are pert_data and critical_path_data
+  # If you want to keep all rows from both tables, use full_join instead of inner_join
+  # final_cpm_table <- pert_data %>% full_join(critical_path_data, by = "Activity")
 
-  return(final_result_table)
+  # If you want to keep only the columns you need
+  # final_cpm_table <- final_cpm_table %>% select(Activity, ..., Duration, Successor, EarlyStart, EarlyFinish, LateStart, LateFinish, TotalSlack, FreeSlack, OnCriticalPath, AlreadyDelayed)
+
+  final_cpm_table <- pert_data %>%
+    inner_join(critical_path_data, by = "Activity")
+
+
+  # Print the final table
+  return(final_cpm_table)
 }
 
 
