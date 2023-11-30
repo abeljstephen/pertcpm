@@ -66,25 +66,25 @@ create_cpm_data <- function(pert_data) {
 
   # Unpack rows with multiple predecessors
   unpacked_data <- cpm_data %>%
-    separate_rows(Predecessor, sep = ",")
+    tidyr::separate_rows(Predecessor, sep = ",")
 
   # Create a data frame for Predecessors
   predecessors_data <- unpacked_data %>%
-    select(Activity, Predecessor, Duration) %>%
-    distinct()
+    dplyr::select(Activity, Predecessor, Duration) %>%
+    dplyr::distinct()
 
   # Rename Predecessor to Successor in the unpacked data
   successors_data <- unpacked_data %>%
-    filter(!is.na(Predecessor)) %>%
-    select(Activity = Predecessor, Successor = Activity) %>%
-    distinct()
+    dplyr::filter(!is.na(Predecessor)) %>%
+    dplyr::select(Activity = Predecessor, Successor = Activity) %>%
+    dplyr::distinct()
 
   # Combine Predecessors and Successors data frames
-  relationships_data <- bind_rows(predecessors_data, successors_data)
+  relationships_data <- dplyr::bind_rows(predecessors_data, successors_data)
 
   # Add columns for EarlyStart and EarlyFinish
   relationships_data <- relationships_data %>%
-    mutate(
+    dplyr::mutate(
       EarlyStart = 0,  # Initialize EarlyStart to 0
       EarlyFinish = 0  # Initialize EarlyFinish to 0
     )
@@ -114,7 +114,7 @@ run_forward_pass <- function(predecessors_data) {
   # have repeated Activity rows indicating one or more Predecessors for each Activity
   # The final output will simply retain only the row (for instances of repeated Activity) where it's EarlyFinish is maximum
   data_forward <- predecessors_data %>%
-    mutate(
+    dplyr::mutate(
       EarlyStart = ifelse(is.na(Predecessor), 0, NA),  # Initialize EarlyStart to 0 for the first activity
       EarlyFinish = ifelse(is.na(Predecessor), Duration, NA)  # Calculate EarlyFinish for the first activity
     )
@@ -149,9 +149,9 @@ run_forward_pass <- function(predecessors_data) {
   # Replace 'YourColumnName' with the actual column name containing EarlyFinish values
 
   data_forward_final <- data_forward %>%
-    group_by(Activity) %>%
+    dplyr::group_by(Activity) %>%
     filter(EarlyFinish == max(EarlyFinish)) %>%
-    ungroup()
+    dplyr::ungroup()
 
   # Return the final result
   return(data_forward_final)
@@ -242,8 +242,8 @@ run_backward_pass <- function(forward_pass_result, relationships_data) {
 
   # Find the row with the minimum LateFinish for each Activity
   min_late_finish_rows <- updated_backward_pass %>%
-    group_by(Activity) %>%
-    slice(which.min(LateFinish))
+    dplyr::group_by(Activity) %>%
+    dplyr::slice(which.min(LateFinish))
 
   # Print the rows with minimum LateFinish for each Activity
   print(min_late_finish_rows)
@@ -312,37 +312,37 @@ clean_up_and_merge <- function(backward_pass_result, pert_data, round_digits = 4
 # Parent function to execute PERT, CPM, and Forward Pass
 pertcpm <- function(user_data) {
   # Step 1: PERT Calculation
-  pert_data <- calculate_pert_metrics(user_data)
+  pert_data <- pertcpm::calculate_pert_metrics(user_data)
 
   # Step 2: CPM Data Preparation
-  cpm_data <- create_cpm_data(pert_data)
+  cpm_data <- pertcpm::create_cpm_data(pert_data)
 
   # Step 3: Forward Pass
-  forward_pass_result <- run_forward_pass(cpm_data[[1]])
+  forward_pass_result <- pertcpm::run_forward_pass(cpm_data[[1]])
 
   # Step 4: Backward Pass
   relationships_data <- cpm_data[[3]]
-  backward_pass_result <- run_backward_pass(forward_pass_result, relationships_data)
+  backward_pass_result <- pertcpm::run_backward_pass(forward_pass_result, relationships_data)
 
 
   # Step 5: Slack Calculation
-  slack_and_cpm_result <- calculate_slack_and_cpm(backward_pass_result)
+  slack_and_cpm_result <- pertcpm::calculate_slack_and_cpm(backward_pass_result)
 
   # Step 6: Merge Final Backward Pass With PERT
-  result_table <- clean_up_and_merge(backward_pass_result, pert_data)
+  result_table <- pertcpm::clean_up_and_merge(backward_pass_result, pert_data)
 
   #Step 7: Merge With Slack
   # Subset slack_and_cpm_result to include only specific columns
   subset_slack_result <- slack_and_cpm_result %>%
-    select(Activity, TotalSlack, FreeSlack, Critical)
+    dplyr::select(Activity, TotalSlack, FreeSlack, Critical)
 
   # Merge result_table with subset_slack_result based on the "Activity" column
   final_result_table <- result_table %>%
-    left_join(subset_slack_result, by = "Activity")
+    dplyr::left_join(subset_slack_result, by = "Activity")
 
   # Replace scientific notation to 4 decimal places
   final_result_table <- final_result_table %>%
-    mutate_all(function(x) if(is.numeric(x)) format(round(x, 4), nsmall = 4) else x)
+    dplyr::mutate_all(function(x) if(is.numeric(x)) format(round(x, 4), nsmall = 4) else x)
 
   return(final_result_table)
 }
