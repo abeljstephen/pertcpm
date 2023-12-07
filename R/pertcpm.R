@@ -1,11 +1,13 @@
 #' @import readxl
 #' @import dplyr
 #' @import tidyr
+#' @import stringr
 
 # Load required libraries
 library(readxl)
 library(dplyr)
 library(tidyr)
+library(stringr)
 
 # Function to calculate Pert_Duration, Standard_Deviation, and Probability
 calculate_metrics <- function(optimistic, expected, pessimistic) {
@@ -41,6 +43,10 @@ calculate_metrics <- function(optimistic, expected, pessimistic) {
 
 # Function to calculate PERT metrics for the entire project
 calculate_pert_metrics <- function(project_data) {
+
+  #gsub function to replace all occurrences of whitespace (\\s) with an empty string in the Predecessor column
+  project_data$Predecessor <- gsub("\\s", "", project_data$Predecessor)
+
   # Apply the function to each row of the data frame
   metrics <- apply(project_data[, c("Optimistic_Duration", "Expected_Duration", "Pessimistic_Duration")], 1,
                    function(x) calculate_metrics(x[1], x[2], x[3]))
@@ -63,6 +69,8 @@ create_cpm_data <- function(pert_data) {
 
   cpm_data <- pert_data[, c("Activity", "Predecessor", "90%_Cumulative_Probability")]
   colnames(cpm_data) <- c("Activity", "Predecessor", "Duration")
+  #gsub function to replace all occurrences of whitespace (\\s) with an empty string in the Predecessor column
+  cpm_data$Predecessor <- gsub("\\s", "", cpm_data$Predecessor)
 
   # Unpack rows with multiple predecessors
   unpacked_data <- cpm_data %>%
@@ -73,316 +81,209 @@ create_cpm_data <- function(pert_data) {
     dplyr::select(Activity, Predecessor, Duration) %>%
     dplyr::distinct()
 
-  # Rename Predecessor to Successor in the unpacked data
+  # Use the value in the Predecessor column to determine that the Activity in same row is the Successor
   successors_data <- unpacked_data %>%
     dplyr::filter(!is.na(Predecessor)) %>%
     dplyr::select(Activity = Predecessor, Successor = Activity) %>%
     dplyr::distinct()
 
-  # Combine Predecessors and Successors data frames
-  relationships_data <- dplyr::bind_rows(predecessors_data, successors_data)
+  # Merge Predecessors and Successors data frames based on the "Activity" column
+   relationships_data <- merge(successors_data, predecessors_data, by = "Activity", all = TRUE)
+
+  return(relationships_data)
+}
+
+
+calculate_forward_pass <- function(cpm_data) {
+  forward_pass_raw_data <- cpm_data
+
+  # Assuming forward_pass_raw_data is your initial dataset
+
+  # Remove leading and trailing whitespaces from the "Activity" column and filter out rows with empty "Activity" values
+  forward_pass_raw_data <- forward_pass_raw_data %>%
+    filter(!is.na(Activity) & str_trim(Activity) != "")
+
+  # Replace empty values in the Predecessor column with NA
+  forward_pass_raw_data$Predecessor[forward_pass_raw_data$Predecessor == ""] <- NA
 
   # Add columns for EarlyStart and EarlyFinish
-  relationships_data <- relationships_data %>%
-    dplyr::mutate(
-      EarlyStart = 0,  # Initialize EarlyStart to 0
-      EarlyFinish = 0  # Initialize EarlyFinish to 0
+  forward_pass_raw_data <- forward_pass_raw_data %>%
+    mutate(
+      EarlyStart = ifelse(is.na(Predecessor), 0, NA),  # Initialize EarlyStart to 0 for the first activity
+      EarlyFinish = ifelse(is.na(Predecessor), Duration, NA) # Calculate EarlyFinish for the first activity
     )
 
-  # Iterate through rows in relationships_data
-  for (i in seq_len(nrow(relationships_data))) {
-    # Check if Duration is missing
-    if (is.na(relationships_data$Duration[i])) {
-      # Find the corresponding Activity in unpacked_data
-      matching_row <- unpacked_data[unpacked_data$Activity == relationships_data$Activity[i], ]
+  # Identify tasks with no predecessors
+  start_tasks <- forward_pass_raw_data[is.na(forward_pass_raw_data$Predecessor), ]
 
-      # Check if a matching row is found
-      if (nrow(matching_row) > 0) {
-        # Use the Duration from matching row to fill in the missing Duration in relationships_data
-        relationships_data$Duration[i] <- matching_row$Duration[1]
+  # Set EarlyStart and EarlyFinish for start tasks
+  start_tasks$EarlyStart <- 0
+  start_tasks$EarlyFinish <- start_tasks$Duration
+
+  # Loop through the start tasks and update successors
+  for (i in seq_along(start_tasks$Activity)) {
+    current_activity <- start_tasks[i, ]
+
+    # Find successors for the current activity
+    successors <- forward_pass_raw_data[forward_pass_raw_data$Predecessor == current_activity$Activity, ]
+
+    # Update EarlyStart and EarlyFinish for the successors
+    forward_pass_raw_data$EarlyStart[forward_pass_raw_data$Activity %in% successors$Activity] <- current_activity$EarlyFinish + 1
+    forward_pass_raw_data$EarlyFinish[forward_pass_raw_data$Activity %in% successors$Activity] <- forward_pass_raw_data$EarlyStart[forward_pass_raw_data$Activity %in% successors$Activity] + forward_pass_raw_data$Duration[forward_pass_raw_data$Activity %in% successors$Activity]
+  }
+
+  # Update the remaining tasks that haven't been processed
+  while (any(is.na(forward_pass_raw_data$EarlyStart) | is.na(forward_pass_raw_data$EarlyFinish))) {
+    for (i in seq_along(forward_pass_raw_data$Activity)) {
+      current_activity <- forward_pass_raw_data[i, ]
+
+      # Check if EarlyStart and EarlyFinish are still NA
+      if (is.na(current_activity$EarlyStart) && is.na(current_activity$EarlyFinish)) {
+        # Find predecessors for the current activity
+        predecessors <- forward_pass_raw_data[forward_pass_raw_data$Activity %in% current_activity$Predecessor, ]
+
+        # Update EarlyStart and EarlyFinish for the current activity
+        if (nrow(predecessors) > 0) {
+          forward_pass_raw_data$EarlyStart[i] <- max(predecessors$EarlyFinish) + 1
+          forward_pass_raw_data$EarlyFinish[i] <- forward_pass_raw_data$EarlyStart[i] + current_activity$Duration
+        }
       }
     }
   }
 
-  return(list(predecessors_data, successors_data, relationships_data))
+
+
+  # Order activities based on Early Start and Early Finish
+  forward_pass_processed_data <- forward_pass_raw_data %>%
+    arrange(EarlyStart, EarlyFinish) %>%
+    group_by(Activity) %>%
+    slice(1) %>%
+    ungroup()
+
+
+  return(list(forward_pass_raw_data = forward_pass_raw_data, forward_pass_processed_data = forward_pass_processed_data))
 }
 
-# Function for forward pass
-run_forward_pass <- function(predecessors_data) {
-  # Assuming 'predecessors_data' is the data frame with columns Activity, Predecessor, and Duration
-  # This predecessors_data, coming from above function "create_cpm_data" and run as run_forward_pass(cpm_data[[1]]) will
-  # have repeated Activity rows indicating one or more Predecessors for each Activity
-  # The final output will simply retain only the row (for instances of repeated Activity) where it's EarlyFinish is maximum
-  data_forward <- predecessors_data %>%
-    dplyr::mutate(
-      EarlyStart = ifelse(is.na(Predecessor), 0, NA),  # Initialize EarlyStart to 0 for the first activity
-      EarlyFinish = ifelse(is.na(Predecessor), Duration, NA)  # Calculate EarlyFinish for the first activity
-    )
 
-  # Initialize indices for the loop
-  preceding_activity_index <- 1
-  next_activity_index <- preceding_activity_index + 1
 
-  # Loop for forward pass
-  while (next_activity_index <= nrow(data_forward)) {
-    # Check if the current next_activity has a predecessor
-    if (!is.na(data_forward$Predecessor[next_activity_index])) {
-      # Activity has predecessor, get EarlyFinish of predecessor
-      predecessor_finish <- data_forward$EarlyFinish[which(data_forward$Activity == data_forward$Predecessor[next_activity_index])]
 
-      # Set EarlyStart for the current next_activity
-      data_forward$EarlyStart[next_activity_index] <- max(predecessor_finish) + 1
+
+calculate_backward_pass <- function(forward_pass_processed_data) {
+  backward_pass_data <- forward_pass_processed_data
+
+  # Initialize LateStart and LateFinish columns
+  backward_pass_data$LateStart <- 0
+  backward_pass_data$LateFinish <- 0
+
+  # Set LateFinish for the tasks that have no Successors
+  tasks_with_no_successors <- backward_pass_data$Activity[is.na(backward_pass_data$Successor)]
+  backward_pass_data$LateFinish[backward_pass_data$Activity %in% tasks_with_no_successors] <- max(backward_pass_data$EarlyFinish)
+
+  # Continue the backward pass calculation
+  for (i in seq(nrow(backward_pass_data), 1, -1)) {
+    current_activity <- backward_pass_data[i, ]  # Fix: Use backward_pass_data[i, ] instead of backward_pass_data[i]
+
+    # Update LateFinish for the current activity
+    if (!is.na(current_activity$Successor)) {  # Fix: Use current_activity$Activity instead of backward_pass_data$Activity[i]
+      successors <- backward_pass_data$Successor[which(backward_pass_data$Activity == current_activity$Successor)]
+
+      # Exclude missing values when calculating the minimum
+      valid_successors <- successors[!is.na(successors)]
+      if (length(valid_successors) > 0) {
+        backward_pass_data$LateFinish[i] <- min(backward_pass_data$LateStart[backward_pass_data$Activity %in% valid_successors]) - 1
+      } else {
+        # If all successors have missing LateStart values, set LateFinish to maximum
+        backward_pass_data$LateFinish[i] <- max(backward_pass_data$LateFinish)
+      }
     } else {
-      # Activity has no predecessor, use the existing logic
-      data_forward$EarlyStart[next_activity_index] <- max(data_forward$EarlyFinish) + 1
+      # Task with no successors
+      backward_pass_data$LateFinish[i] <- max(backward_pass_data$LateFinish)
     }
 
-    # Calculate EarlyFinish for the current next_activity
-    data_forward$EarlyFinish[next_activity_index] <- data_forward$EarlyStart[next_activity_index] + data_forward$Duration[next_activity_index] - 1
-
-    # Update indices for the next iteration
-    preceding_activity_index <- next_activity_index
-    next_activity_index <- preceding_activity_index + 1
+    # Update LateStart based on LateFinish
+    backward_pass_data$LateStart[i] <- backward_pass_data$LateFinish[i] - backward_pass_data$Duration[i] + 1
   }
 
-  # Assuming 'data_forward' is your original data frame
-  # Replace 'YourColumnName' with the actual column name containing EarlyFinish values
-
-  data_forward_final <- data_forward %>%
-    dplyr::group_by(Activity) %>%
-    filter(EarlyFinish == max(EarlyFinish)) %>%
-    dplyr::ungroup()
-
-  # Return the final result
-  return(data_forward_final)
+  return(backward_pass_data)
 }
 
 
 
-run_backward_pass <- function(forward_pass_result, relationships_data) {
-  # Subset relationships_data where Successor exists
-  backward_pass_data <- relationships_data[!is.na(relationships_data$Successor), ]
-
-  # Drop the Predecessor column
-  backward_pass_data <- backward_pass_data[, !(names(backward_pass_data) %in% "Predecessor")]
-
-  # Find the last row of forward_pass_result
-  last_row <- tail(forward_pass_result, 1)
-
-  # Drop the Predecessor column
-  last_row <- last_row[, !(names(last_row) %in% "Predecessor")]
-
-  # Add column "Successor" with value NA after column Activity
-  last_row <- cbind(last_row[, "Activity", drop = FALSE], Successor = NA, last_row[, -1])
-
-  # Add the last row to backward_pass
-  updated_backward_pass <- rbind(backward_pass_data, last_row)
-
-  # Loop through backward_pass
-  for (i in seq_along(backward_pass_data$Activity)) {
-    # Match backward_pass$Activity with forward_pass_result$Activity
-    match_index <- match(backward_pass_data$Activity[i], forward_pass_result$Activity)
-
-    # Check if there's a match and the match_index is not NA
-    if (!is.na(match_index)) {
-      # Copy forward_pass_result$EarlyStart and forward_pass_result$EarlyFinish to backward_pass
-      updated_backward_pass$EarlyStart[i] <- forward_pass_result$EarlyStart[match_index]
-      updated_backward_pass$EarlyFinish[i] <- forward_pass_result$EarlyFinish[match_index]
-    }
-  }
-
-
-
-  # Add columns LateStart and LateFinish with initial values of 0
-  updated_backward_pass$LateStart <- 0
-  updated_backward_pass$LateFinish <- 0
-
-  # Calculate last activity LateStart and LateFinish values
-  # Determine the last row as the last activity
-  last_activity_row <- updated_backward_pass[nrow(updated_backward_pass), ]
-
-  # Set LateFinish value to be the same as EarlyFinish
-  last_activity_row$LateFinish <- last_activity_row$EarlyFinish
-
-  # Subtract EarlyFinish from Duration to set LateStart value
-  last_activity_row$LateStart <- last_activity_row$LateFinish - last_activity_row$Duration
-
-  # Update the last row in updated_backward_pass
-  updated_backward_pass[nrow(updated_backward_pass), ] <- last_activity_row
-
-  # Loop through rows starting from the second-to-last row
-  for (index_underneath in (nrow(updated_backward_pass) - 1):1) {
-    # Get the Successor value of the row underneath
-    successor_value <- updated_backward_pass$Successor[index_underneath]
-
-    # Find the first match of Successor value in the Activity column
-    matching_row <- which(updated_backward_pass$Activity == successor_value)[1]
-
-    # Take the LateStart of the matching row as LateFinish for the row underneath
-    updated_backward_pass$LateFinish[index_underneath] <- updated_backward_pass$LateStart[matching_row]
-
-    # Subtract Duration from LateFinish to get LateStart for the row underneath
-    updated_backward_pass$LateStart[index_underneath] <- updated_backward_pass$LateFinish[index_underneath] - updated_backward_pass$Duration[index_underneath]
-  }
-
-  # Find the row with the minimum LateFinish for each Activity
-  min_late_finish_rows <- updated_backward_pass %>%
-    dplyr::group_by(Activity) %>%
-    dplyr::slice(which.min(LateFinish))
-
-  # Print the rows with minimum LateFinish for each Activity
-  print(min_late_finish_rows)
-
-  #return(updated_backward_pass)
-  return(min_late_finish_rows)
-}
-
-
-
-evaluate_slack_and_path <- function(data) {
+determine_critical_path <- function(backward_pass_data) {
   # Calculate Total Slack
-  data$TotalSlack <- round(data$LateFinish - data$EarlyFinish, 4)
+  backward_pass_data$TotalSlack <- round(backward_pass_data$LateFinish - backward_pass_data$EarlyFinish, 4)
 
   # Create a data frame to store the EarlyStart values of Successors
-  successor_earlystart <- data.frame(Activity = data$Activity, EarlyStart_Successor = NA)
+  successor_earlystart <- data.frame(Activity = backward_pass_data$Activity, EarlyStart_Successor = NA)
 
   # Loop through rows in data
-  for (i in seq_len(nrow(data))) {
+  for (i in seq_len(nrow(backward_pass_data))) {
     # Check if the Successor column is not NA
-    if (!is.na(data$Successor[i])) {
+    if (!is.na(backward_pass_data$Successor[i])) {
       # Find the matching row in successor_earlystart
-      matching_row <- which(successor_earlystart$Activity == data$Successor[i])
+      matching_row <- which(successor_earlystart$Activity == backward_pass_data$Successor[i])
 
       # Update the EarlyStart_Successor value in the matching row
-      successor_earlystart$EarlyStart_Successor[matching_row] <- round(data$EarlyStart[i], 4)
+      successor_earlystart$EarlyStart_Successor[matching_row] <- round(backward_pass_data$EarlyStart[i], 4)
     }
   }
 
   # Calculate Free Slack considering negative values
-  data$FreeSlack <- ifelse(is.na(data$Successor),
-                           round(data$TotalSlack, 4),
-                           round(lead(successor_earlystart$EarlyStart_Successor, default = max(data$LateFinish)) - data$LateFinish, 4))
+  backward_pass_data$FreeSlack <- ifelse(is.na(backward_pass_data$Successor),
+                                         round(backward_pass_data$TotalSlack, 4),
+                                         ifelse(is.na(lead(successor_earlystart$EarlyStart_Successor)),
+                                                max(backward_pass_data$LateFinish) - backward_pass_data$LateFinish,
+                                                round(lead(successor_earlystart$EarlyStart_Successor) - backward_pass_data$LateFinish, 4)))
 
   # Identify OnCriticalPath and AlreadyDelayed
-  data$OnCriticalPath <- ifelse(data$TotalSlack == 0, "Yes", "No")
-  data$AlreadyDelayed <- ifelse(data$FreeSlack < 0, "Yes", "No")
+  backward_pass_data$OnCriticalPath <- ifelse(backward_pass_data$TotalSlack == 0, "Yes", "No")
+  backward_pass_data$AlreadyDelayed <- ifelse(backward_pass_data$FreeSlack < 0, "Yes", "No")
 
   # Round numeric columns to 4 decimal places
-  numeric_columns <- sapply(data, is.numeric)
-  data[numeric_columns] <- round(data[numeric_columns], 4)
+  numeric_columns <- sapply(backward_pass_data, is.numeric)
+  backward_pass_data[numeric_columns] <- round(backward_pass_data[numeric_columns], 4)
 
-  return(data)
+  return(backward_pass_data)
 }
-
-
-
-
-
-determine_critical_path <- function(data) {
-  # Calculate Total Slack
-  data$TotalSlack <- round(data$LateFinish - data$EarlyFinish, 4)
-
-  # Create a data frame to store the EarlyStart values of Successors
-  successor_earlystart <- data.frame(Activity = data$Activity, EarlyStart_Successor = NA)
-
-  # Loop through rows in data
-  for (i in seq_len(nrow(data))) {
-    # Check if the Successor column is not NA
-    if (!is.na(data$Successor[i])) {
-      # Find the matching row in successor_earlystart
-      matching_row <- which(successor_earlystart$Activity == data$Successor[i])
-
-      # Update the EarlyStart_Successor value in the matching row
-      successor_earlystart$EarlyStart_Successor[matching_row] <- round(data$EarlyStart[i], 4)
-    }
-  }
-
-  # Calculate Free Slack considering negative values
-  data$FreeSlack <- ifelse(is.na(data$Successor),
-                           round(data$TotalSlack, 4),
-                           ifelse(is.na(lead(successor_earlystart$EarlyStart_Successor)),
-                                  max(data$LateFinish) - data$LateFinish,
-                                  round(lead(successor_earlystart$EarlyStart_Successor) - data$LateFinish, 4)))
-
-  # Identify OnCriticalPath and AlreadyDelayed
-  data$OnCriticalPath <- ifelse(data$TotalSlack == 0, "Yes", "No")
-  data$AlreadyDelayed <- ifelse(data$FreeSlack < 0, "Yes", "No")
-
-  # Round numeric columns to 4 decimal places
-  numeric_columns <- sapply(data, is.numeric)
-  data[numeric_columns] <- round(data[numeric_columns], 4)
-
-  return(data)
-}
-
-
-
-
-
-
-
-
 
 
 # Parent function to execute PERT, CPM, and Forward Pass
-pertcpm <- function(user_data) {
+pertcpm <- function(project_data) {
   # Step 1: PERT Calculation
-  pert_data <- pertcpm::calculate_pert_metrics(user_data)
+  pert_data <- calculate_pert_metrics(project_data)
 
   # Step 2: CPM Data Preparation
-  cpm_data <- pertcpm::create_cpm_data(pert_data)
+  cpm_data <- create_cpm_data(pert_data)
 
   # Step 3: Forward Pass
-  forward_pass_result <- pertcpm::run_forward_pass(cpm_data[[1]])
+  forward_pass_all_data <- calculate_forward_pass(cpm_data)
+  forward_pass_raw_data<- forward_pass_all_data$forward_pass_raw_data
+  forward_pass_processed_data<- forward_pass_all_data$forward_pass_processed_data
 
   # Step 4: Backward Pass
-  relationships_data <- cpm_data[[3]]
-  backward_pass_result <- pertcpm::run_backward_pass(forward_pass_result, relationships_data)
+  backward_pass_data<- calculate_backward_pass(forward_pass_processed_data)
 
+  # Step 5: Critical Path
+  critical_path <- determine_critical_path(backward_pass_data)
 
-  #Step 5: Calculate Free Slack and Total Slack
-  slack_data <- evaluate_slack_and_path(backward_pass_result)
+  return(critical_path)
 
-
-  # Step 6: Determine Critical Path
-  critical_path_data <- determine_critical_path(slack_data)
-  #print(result)
-
-  # Step 7: Final CPM Table
-
-  # Assuming your tables are pert_data and critical_path_data
-  # If you want to keep all rows from both tables, use full_join instead of inner_join
-  # final_cpm_table <- pert_data %>% full_join(critical_path_data, by = "Activity")
-
-  # If you want to keep only the columns you need
-  # final_cpm_table <- final_cpm_table %>% select(Activity, ..., Duration, Successor, EarlyStart, EarlyFinish, LateStart, LateFinish, TotalSlack, FreeSlack, OnCriticalPath, AlreadyDelayed)
-
-  final_cpm_table <- pert_data %>%
-    inner_join(critical_path_data, by = "Activity")
-
-
-  # Print the final table
-  return(final_cpm_table)
 }
 
 
-#libraries needed
-#library(readxl)
-#library(tidyr)
-#library(dplyr)
 # # Specify the data path, filename, and sheetname
-# #datapath <- "C:/Users/abstephe/OneDrive - Microsoft/Documents/R Code/CriticalPath/Data/"
-# datapath <- "/Users/abeljstephen/Documents/R Code/R/CriticalPath/Data"
-# filename <- "CriticalPath.xlsx"
-# sheetname <- "Sheet5"
+# # datapath <- "C:/Users/abstephe/OneDrive - Microsoft/Documents/R Code/CriticalPath/Data/"
+#  datapath <- "/Users/abeljstephen/Documents/R Code/R/CriticalPath/Data"
+#  filename <- "CriticalPath.xlsx"
+#  sheetname <- "Sheet5"
 # # Combine the path and filename
-# file_path <- file.path(datapath, filename)
+#  file_path <- file.path(datapath, filename)
 # # Read data from Excel file
-# original_data <- readxl::read_excel(file_path, sheet = sheetname)
+#  original_data <- readxl::read_excel(file_path, sheet = sheetname)
 #
 # # Example usage:
-# user_data<- original_data
-# result <- pertcpm(user_data)
-# print(result)
+#  project_data<- original_data
+#  result <- pertcpm(project_data)
+#  print(result)
 
 
