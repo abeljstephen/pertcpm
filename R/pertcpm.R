@@ -266,7 +266,18 @@ pertcpm <- function(project_data) {
   # Step 5: Critical Path
   critical_path <- determine_critical_path(backward_pass_data)
 
-  return(critical_path)
+  # Step 6:
+  library(dplyr)
+
+  # Drop the "Predecessor" column from project_data
+  project_data <- project_data %>%
+    select(-Predecessor)
+
+  # Merge the modified project_data with critical_path based on the "Activity" column
+  merged_data <- project_data %>%
+    left_join(critical_path, by = "Activity")
+
+  return(merged_data)
 
 }
 
@@ -283,7 +294,8 @@ pertcpm <- function(project_data) {
 #
 # # Example usage:
 #  project_data<- original_data
-#  result <- pertcpm(project_data)
-#  print(result)
+#  critical_path_final <- pertcpm(project_data)
+#  print(critical_path_final, n = Inf)
+
 
 
